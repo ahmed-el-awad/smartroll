@@ -6,7 +6,8 @@ from routes.auth_routes import auth_bp
 from routes.session_routes import session_bp
 from routes.attendance_routes import attendance_bp
 from routes.classroom_routes import classroom_bp
-
+from routes.login_routes import login_bp
+from routes.signup_routes import signup_bp
 
 def create_app():
     app = Flask(__name__)
@@ -21,6 +22,8 @@ def create_app():
     app.register_blueprint(session_bp)
     app.register_blueprint(attendance_bp)
     app.register_blueprint(classroom_bp)
+    app.register_blueprint(login_bp)
+    app.register_blueprint(signup_bp)
 
 
     @app.route("/")
