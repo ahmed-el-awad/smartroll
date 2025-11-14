@@ -1,39 +1,74 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from models import db, Student, Session, AttendanceLog, ApprovedSubnet
-from utils.ip_utils import get_ip_prefix
 from routes.auth_routes import require_admin_key
 
-attendance_bp = Blueprint("attendance", __name__, url_prefix="/attendance")
+attendance_bp = Blueprint("attendance_bp", __name__, url_prefix="/attendance")
 
-# 1) Student/app check-in (must be on approved classroom Wi-Fi)
-@attendance_bp.route("/check_in", methods=["POST"])
+# -------------------------
+# Helper — Check if IP is allowed
+# -------------------------
+def ip_in_approved_subnet(client_ip: str) -> bool:
+    """
+    Check if the client_ip begins with any approved subnet prefix.
+    Example: if client_ip="192.168.0.42" and prefix="192.168.0."
+    """
+    if not client_ip:
+        return False
+
+    subnets = ApprovedSubnet.query.all()
+
+    for subnet in subnets:
+        prefix = subnet.prefix.strip()
+        if client_ip.startswith(prefix):
+            return True
+
+    return False
+
+
+# =====================================================
+# 1) STUDENT SELF CHECK-IN (must be on approved Wi-Fi)
+# =====================================================
+@attendance_bp.post("/check_in")
 def check_in():
     data = request.get_json() or {}
+
     mac = (data.get("mac") or "").upper()
     session_id = data.get("session_id")
 
-    # Step 1: Get student's current network prefix
-    client_prefix = get_ip_prefix()
+    if not mac or not session_id:
+        return jsonify({"error": "missing_fields"}), 400
 
-    # Step 2: Verify that prefix matches an approved classroom
-    allowed_prefix = ApprovedSubnet.query.filter(
-        ApprovedSubnet.prefix.like(f"{client_prefix}%")
-    ).first()
+    # -------------------------
+    # Get client’s actual source IP from request
+    # -------------------------
+    client_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    print("DEBUG: Client IP =", client_ip)
 
-    if not allowed_prefix:
+    # -------------------------
+    # Check Wi-Fi subnet
+    # -------------------------
+    if not ip_in_approved_subnet(client_ip):
+        print("DEBUG: client not in approved subnet")
         return jsonify({"error": "You must be on classroom Wi-Fi"}), 403
 
-    # Step 3: Validate student and session
+    # -------------------------
+    # Validate student by MAC
+    # --------------------------
     student = Student.query.filter_by(mac_address=mac).first()
     if not student:
         return jsonify({"error": "unknown_device"}), 404
 
+    # -------------------------
+    # Validate session
+    # -------------------------
     s = Session.query.get(session_id)
     if not s:
         return jsonify({"error": "session_not_found"}), 404
 
-    # Step 4: Record the check-in log
+    # -------------------------
+    # Insert attendance log
+    # -------------------------
     log = AttendanceLog(
         session_id=session_id,
         student_id=student.id,
@@ -41,18 +76,21 @@ def check_in():
         status="Heartbeat",
         timestamp=datetime.utcnow()
     )
+
     db.session.add(log)
     db.session.commit()
 
     return jsonify({
         "message": "check_in_recorded",
         "student": student.name,
-        "classroom_prefix": allowed_prefix.prefix
+        "classroom_prefix": s.classroom.wifi_network_prefix
     }), 200
 
 
-# 2) Router/PI push (optional future: auto-detection)
-@attendance_bp.route("/router_push", methods=["POST"])
+# =====================================================
+# 2) ROUTER PUSH ENDPOINT (ADMIN ONLY)
+# =====================================================
+@attendance_bp.post("/router_push")
 def router_push():
     if not require_admin_key():
         return jsonify({"error": "unauthorized"}), 401
@@ -66,11 +104,14 @@ def router_push():
         return jsonify({"error": "session_not_found"}), 404
 
     saved = 0
-    for d in devices:
-        mac = (d.get("mac") or "").upper()
+
+    for dev in devices:
+        mac = (dev.get("mac") or "").upper()
+
         student = Student.query.filter_by(mac_address=mac).first()
         if not student:
             continue
+
         log = AttendanceLog(
             session_id=session_id,
             student_id=student.id,
@@ -78,8 +119,10 @@ def router_push():
             status="Heartbeat",
             timestamp=datetime.utcnow()
         )
+
         db.session.add(log)
         saved += 1
+
     db.session.commit()
 
     return jsonify({
@@ -88,14 +131,21 @@ def router_push():
     }), 200
 
 
-# 3) Instructor view of session logs
-@attendance_bp.route("/session/<int:session_id>", methods=["GET"])
+# =====================================================
+# 3) INSTRUCTOR: GET ALL CHECK-INS FOR A SESSION
+# =====================================================
+@attendance_bp.get("/session/<int:session_id>")
 def session_logs(session_id):
-    logs = AttendanceLog.query.filter_by(session_id=session_id).order_by(AttendanceLog.timestamp).all()
+    logs = AttendanceLog.query.filter_by(
+        session_id=session_id
+    ).order_by(AttendanceLog.timestamp).all()
+
     out = [{
         "student_id": l.student_id,
         "mac": l.mac,
         "status": l.status,
         "timestamp": l.timestamp.isoformat()
     } for l in logs]
-    return jsonify(out),404
+
+    return jsonify(out), 200
+
