@@ -1,47 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'welcome.dart';
 import 'start_attendance.dart';
 import 'history.dart';
 
-class Dashboard extends StatefulWidget {
-  const Dashboard({super.key});
+class Dashboard extends StatelessWidget {
+  final String fullName;
 
-  @override
-  State<Dashboard> createState() => _DashboardState();
-}
-
-class _DashboardState extends State<Dashboard> {
-  String? fullName;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadUserName();
-  }
-
-  Future<void> _loadUserName() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        final doc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
-
-        if (doc.exists) {
-          final firstName = doc['first_name'];
-          final lastName = doc['last_name'];
-          setState(() {
-            fullName = "$firstName $lastName";
-          });
-        }
-      }
-    } catch (e) {
-      print("Error loading name: $e");
-    }
-  }
+  const Dashboard({super.key, required this.fullName});
 
   @override
   Widget build(BuildContext context) {
@@ -59,8 +24,7 @@ class _DashboardState extends State<Dashboard> {
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.black),
             tooltip: "Logout",
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
+            onPressed: () {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(builder: (context) => const WelcomePage()),
@@ -83,24 +47,19 @@ class _DashboardState extends State<Dashboard> {
           children: [
             const SizedBox(height: 10),
 
-            // Welcome text
-            Column(
-              children: [
-                Text(
-                  fullName != null ? "Welcome, $fullName" : "Loading...",
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                  textAlign: TextAlign.center,
+            Center(
+              child: Text(
+                "Welcome, $fullName",
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
                 ),
-              ],
+              ),
             ),
 
             const SizedBox(height: 60),
 
-            // Start Attendance button
             _buildDashboardButton(
               label: "Start Attendance",
               icon: Icons.wifi,
@@ -116,7 +75,6 @@ class _DashboardState extends State<Dashboard> {
 
             const SizedBox(height: 40),
 
-            // Attendance History button
             _buildDashboardButton(
               label: "Attendance History",
               icon: Icons.history,
@@ -124,7 +82,10 @@ class _DashboardState extends State<Dashboard> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => const HistoryPage(),
+                    builder: (context) => HistoryPage(
+                      studentId: 1,      // Replace with real student_id later
+                      sessionId: 1,      // Replace with real session_id later
+                    ),
                   ),
                 );
               },
@@ -135,7 +96,6 @@ class _DashboardState extends State<Dashboard> {
     );
   }
 
-  // Reusable styled button widget
   Widget _buildDashboardButton({
     required String label,
     required IconData icon,
