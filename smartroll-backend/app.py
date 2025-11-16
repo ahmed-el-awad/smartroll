@@ -8,6 +8,7 @@ from routes.attendance_routes import attendance_bp
 from routes.classroom_routes import classroom_bp
 from routes.login_routes import login_bp
 from routes.signup_routes import signup_bp
+from routes.user_routes import user_bp
 
 def create_app():
     app = Flask(__name__)
@@ -24,6 +25,7 @@ def create_app():
     app.register_blueprint(classroom_bp)
     app.register_blueprint(login_bp)
     app.register_blueprint(signup_bp)
+    app.register_blueprint(user_bp)
 
 
     @app.route("/")
