@@ -16,10 +16,87 @@ def ip_in_approved_subnet(client_ip: str) -> bool:
     subnets = ApprovedSubnet.query.all()
     for subnet in subnets:
         prefix = subnet.prefix.strip()
+        print("DEBUG-Subnet Check: Client IP =", client_ip, "Prefix =", prefix)
         if client_ip.startswith(prefix):
             return True
 
     return False
+
+
+# -------------------------
+# Helper — Check if student is currently checked in
+# -------------------------
+def is_student_checked_in(student_id: int, session_id: int) -> dict:
+    """
+    Check if a student is currently checked in to a session.
+    Returns a dict with:
+    - checked_in: bool
+    - reason: str (explanation)
+    - last_heartbeat: str or None (ISO format)
+    - time_until_expiry: int or None (minutes)
+    """
+    now = datetime.utcnow()
+    
+    # Get session
+    session = Session.query.get(session_id)
+    if not session:
+        return {
+            "checked_in": False,
+            "reason": "session_not_found",
+            "last_heartbeat": None,
+            "time_until_expiry": None
+        }
+    
+    # Check if session is active
+    if now < session.start_time:
+        return {
+            "checked_in": False,
+            "reason": "session_not_started",
+            "last_heartbeat": None,
+            "time_until_expiry": None
+        }
+    
+    if session.end_time and now > session.end_time:
+        return {
+            "checked_in": False,
+            "reason": "session_ended",
+            "last_heartbeat": None,
+            "time_until_expiry": None
+        }
+    
+    # Get most recent heartbeat for this student in this session
+    last_log = AttendanceLog.query.filter_by(
+        session_id=session_id,
+        student_id=student_id
+    ).order_by(desc(AttendanceLog.timestamp)).first()
+    
+    if not last_log:
+        return {
+            "checked_in": False,
+            "reason": "no_heartbeat_recorded",
+            "last_heartbeat": None,
+            "time_until_expiry": None
+        }
+    
+    # Calculate time since last heartbeat
+    time_since_heartbeat = (now - last_log.timestamp).total_seconds() / 60  # minutes
+    max_allowed_interval = session.heartbeat_minutes + session.grace_minutes
+    
+    if time_since_heartbeat <= max_allowed_interval:
+        time_until_expiry = int(max_allowed_interval - time_since_heartbeat)
+        return {
+            "checked_in": True,
+            "reason": "active",
+            "last_heartbeat": last_log.timestamp.isoformat(),
+            "time_until_expiry": time_until_expiry
+        }
+    else:
+        return {
+            "checked_in": False,
+            "reason": "heartbeat_expired",
+            "last_heartbeat": last_log.timestamp.isoformat(),
+            "time_until_expiry": None
+        }
 
 
 # =====================================================
@@ -63,6 +140,21 @@ def check_in():
     if not s:
         return jsonify({"error": "session_not_found"}), 404
 
+    # Validate session timing - check if current time is within session period
+    now = datetime.utcnow()
+    
+    if now < s.start_time:
+        return jsonify({
+            "error": "Session has not started yet",
+            "session_start_time": s.start_time.isoformat()
+        }), 400
+    
+    if s.end_time and now > s.end_time:
+        return jsonify({
+            "error": "Session has ended",
+            "session_end_time": s.end_time.isoformat()
+        }), 400
+
     # Create log entry
     log = AttendanceLog(
         session_id=session_id,
@@ -85,9 +177,16 @@ def check_in():
 
     print("DEBUG-9: Total logs now =", AttendanceLog.query.count())
 
+    # Check current status after recording heartbeat
+    status = is_student_checked_in(student.id, session_id)
+
     return jsonify({
         "message": "check_in_recorded",
-        "student": student.name
+        "student": student.name,
+        "checked_in": status["checked_in"],
+        "reason": status["reason"],
+        "last_heartbeat": status["last_heartbeat"],
+        "time_until_expiry": status["time_until_expiry"]
     }), 200
 
 
@@ -106,6 +205,21 @@ def router_push():
     s = Session.query.get(session_id)
     if not s:
         return jsonify({"error": "session_not_found"}), 404
+
+    # Validate session timing - check if current time is within session period
+    now = datetime.utcnow()
+    
+    if now < s.start_time:
+        return jsonify({
+            "error": "Session has not started yet",
+            "session_start_time": s.start_time.isoformat()
+        }), 400
+    
+    if s.end_time and now > s.end_time:
+        return jsonify({
+            "error": "Session has ended",
+            "session_end_time": s.end_time.isoformat()
+        }), 400
 
     saved = 0
 
@@ -135,7 +249,41 @@ def router_push():
 
 
 # =====================================================
-# 3) INSTRUCTOR VIEW LOGS (Newest → Oldest)
+# 3) CHECK CURRENT STATUS (Student)
+# =====================================================
+@attendance_bp.get("/status")
+def check_status():
+    """
+    Check if a student is currently checked in to a session.
+    Query params: mac, session_id
+    """
+    mac = request.args.get("mac", "").upper()
+    session_id = request.args.get("session_id", type=int)
+
+    if not mac or not session_id:
+        return jsonify({"error": "missing_fields"}), 400
+
+    # Validate student
+    student = Student.query.filter_by(mac_address=mac).first()
+    if not student:
+        return jsonify({"error": "unknown_device"}), 404
+
+    # Check status
+    status = is_student_checked_in(student.id, session_id)
+
+    return jsonify({
+        "student_id": student.id,
+        "student_name": student.name,
+        "session_id": session_id,
+        "checked_in": status["checked_in"],
+        "reason": status["reason"],
+        "last_heartbeat": status["last_heartbeat"],
+        "time_until_expiry": status["time_until_expiry"]
+    }), 200
+
+
+# =====================================================
+# 4) INSTRUCTOR VIEW LOGS (Newest → Oldest)
 # =====================================================
 @attendance_bp.get("/session/<int:session_id>")
 def session_logs(session_id):
